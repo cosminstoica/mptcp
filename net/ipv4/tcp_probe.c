@@ -32,6 +32,7 @@
 #include <net/net_namespace.h>
 
 #include <net/tcp.h>
+#include <net/mptcp.h>
 
 MODULE_AUTHOR("Stephen Hemminger <shemminger@linux-foundation.org>");
 MODULE_DESCRIPTION("TCP cwnd snooper");
@@ -49,6 +50,13 @@ module_param(bufsize, uint, 0);
 static unsigned int fwmark __read_mostly;
 MODULE_PARM_DESC(fwmark, "skb mark to match (0=no mark)");
 module_param(fwmark, uint, 0);
+
+#ifdef CONFIG_MPTCP
+static int log_interval __read_mostly = 100;
+MODULE_PARM_DESC(log_interval, "Log interval (0 = log every event, "
+		 "n = log at most every n milliseconds)");
+module_param(log_interval, int, 0);
+#endif
 
 static int full __read_mostly;
 MODULE_PARM_DESC(full, "Full log (1=every ack packet received,  0=only cwnd changes)");
@@ -107,8 +115,97 @@ static inline int tcp_probe_avail(void)
 static void jtcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				 const struct tcphdr *th, unsigned int len)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_sock *inet = inet_sk(sk);
+
+#ifdef CONFIG_MPTCP
+	if (log_interval && tp->mptcp) {
+		if (!tp->mptcp->last_rcv_probe)
+			tp->mptcp->last_rcv_probe = jiffies;
+		else if (jiffies - tp->mptcp->last_rcv_probe <
+			 log_interval * HZ / 1000)
+			goto out;
+		tp->mptcp->last_rcv_probe = jiffies;
+	}
+#endif
+
+	/* Only update if port or skb mark matches */
+	if (((port == 0 && fwmark == 0) ||
+	     ntohs(inet->inet_dport) == port ||
+	     ntohs(inet->inet_sport) == port ||
+	     (fwmark > 0 && skb->mark == fwmark)) &&
+	    (full || tp->snd_cwnd != tcp_probe.lastcwnd)) {
+
+		spin_lock(&tcp_probe.lock);
+		/* If log fills, just silently drop */
+		if (tcp_probe_avail() > 1) {
+			struct tcp_log *p = tcp_probe.log + tcp_probe.head;
+
+			p->tstamp = ktime_get();
+			switch (sk->sk_family) {
+			case AF_INET:
+				tcp_probe_copy_fl_to_si4(inet, p->src.v4, s);
+				tcp_probe_copy_fl_to_si4(inet, p->dst.v4, d);
+				break;
+			case AF_INET6:
+				memset(&p->src.v6, 0, sizeof(p->src.v6));
+				memset(&p->dst.v6, 0, sizeof(p->dst.v6));
+#if IS_ENABLED(CONFIG_IPV6)
+				p->src.v6.sin6_family = AF_INET6;
+				p->src.v6.sin6_port = inet->inet_sport;
+				p->src.v6.sin6_addr = inet6_sk(sk)->saddr;
+
+				p->dst.v6.sin6_family = AF_INET6;
+				p->dst.v6.sin6_port = inet->inet_dport;
+				p->dst.v6.sin6_addr = sk->sk_v6_daddr;
+#endif
+				break;
+			default:
+				BUG();
+			}
+			p->length = skb->len;
+			p->snd_nxt = tp->snd_nxt;
+			p->snd_una = tp->snd_una;
+			p->snd_cwnd = tp->snd_cwnd;
+			p->snd_wnd = tp->snd_wnd;
+			p->ssthresh = tcp_current_ssthresh(sk);
+			p->srtt = tp->srtt_us >> 3;
+
+			tcp_probe.head = (tcp_probe.head + 1) & (bufsize - 1);
+		}
+		tcp_probe.lastcwnd = tp->snd_cwnd;
+		spin_unlock(&tcp_probe.lock);
+
+		wake_up(&tcp_probe.wait);
+	}
+
+#ifdef CONFIG_MPTCP
+out:
+#endif
+	jprobe_return();
+	return 0;
+}
+
+/*
+ * Hook inserted to be called before each receive packet.
+ * Note: arguments must match tcp_transmit_skb()!
+ */
+static int jtcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
+		    gfp_t gfp_mask)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	const struct inet_sock *inet = inet_sk(sk);
+
+#ifdef CONFIG_MPTCP
+	if (log_interval && tp->mptcp) {
+		if (!tp->mptcp->last_rcv_probe)
+			tp->mptcp->last_rcv_probe = jiffies;
+		else if (jiffies - tp->mptcp->last_rcv_probe <
+			 log_interval * HZ / 1000)
+			goto out;
+		tp->mptcp->last_rcv_probe = jiffies;
+	}
+#endif
 
 	/* Only update if port or skb mark matches */
 	if (((port == 0 && fwmark == 0) ||
@@ -162,14 +259,25 @@ static void jtcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 		wake_up(&tcp_probe.wait);
 	}
 
+#ifdef CONFIG_MPTCP
+out:
+#endif
 	jprobe_return();
+	return 0;
 }
 
-static struct jprobe tcp_jprobe = {
+static struct jprobe tcp_jprobe_rcv = {
 	.kp = {
 		.symbol_name	= "tcp_rcv_established",
 	},
 	.entry	= jtcp_rcv_established,
+};
+
+static struct jprobe tcp_jprobe_snd = {
+	.kp = {
+		.symbol_name	= "tcp_transmit_skb",
+	},
+	.entry	= jtcp_transmit_skb,
 };
 
 static int tcpprobe_open(struct inode *inode, struct file *file)
@@ -276,13 +384,19 @@ static __init int tcpprobe_init(void)
 	if (!proc_create(procname, S_IRUSR, init_net.proc_net, &tcpprobe_fops))
 		goto err0;
 
-	ret = register_jprobe(&tcp_jprobe);
+	ret = register_jprobe(&tcp_jprobe_rcv);
 	if (ret)
 		goto err1;
+
+	ret = register_jprobe(&tcp_jprobe_snd);
+	if (ret)
+		goto err2;
 
 	pr_info("probe registered (port=%d/fwmark=%u) bufsize=%u\n",
 		port, fwmark, bufsize);
 	return 0;
+ err2:
+	unregister_jprobe(&tcp_jprobe_snd);
  err1:
 	remove_proc_entry(procname, init_net.proc_net);
  err0:
@@ -294,7 +408,8 @@ module_init(tcpprobe_init);
 static __exit void tcpprobe_exit(void)
 {
 	remove_proc_entry(procname, init_net.proc_net);
-	unregister_jprobe(&tcp_jprobe);
+	unregister_jprobe(&tcp_jprobe_snd);
+	unregister_jprobe(&tcp_jprobe_rcv);
 	kfree(tcp_probe.log);
 }
 module_exit(tcpprobe_exit);
