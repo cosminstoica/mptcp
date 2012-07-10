@@ -205,6 +205,9 @@ struct mptcp_tcp_sock {
 
 	/* HMAC of the third ack */
 	char sender_mac[20];
+
+	unsigned long last_snd_probe;
+	unsigned long last_rcv_probe;
 };
 
 struct mptcp_tw {
