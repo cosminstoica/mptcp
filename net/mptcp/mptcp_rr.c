@@ -12,6 +12,7 @@ module_param(cwnd_limited, bool, 0644);
 MODULE_PARM_DESC(cwnd_limited, "if set to 1, the scheduler tries to fill the congestion-window on all subflows");
 
 struct rrsched_priv {
+	// number of pkts has been sent recently on this sf
 	unsigned char quota;
 };
 
@@ -39,6 +40,7 @@ static bool mptcp_rr_is_available(const struct sock *sk, const struct sk_buff *s
 
 	if (tp->pf)
 		return false;
+	printk(" 	checking if we got a loss \n");
 
 	if (inet_csk(sk)->icsk_ca_state == TCP_CA_Loss) {
 		/* If SACK is disabled, and we got a loss, TCP does not exit
@@ -54,18 +56,23 @@ static bool mptcp_rr_is_available(const struct sock *sk, const struct sk_buff *s
 		else if (tp->snd_una != tp->high_seq)
 			return false;
 	}
+	printk("	checking if mptcp fully establish \n");
 
 	if (!tp->mptcp->fully_established) {
 		/* Make sure that we send in-order data */
+		printk("		 mptcp_end_seq=%x pkt_end_seq=%x \n", 
+				 tp->mptcp->last_end_data_seq, TCP_SKB_CB(skb)->seq);
 		if (skb && tp->mptcp->second_packet &&
 		    tp->mptcp->last_end_data_seq != TCP_SKB_CB(skb)->seq)
 			return false;
 	}
 
+	printk("	checking zero_wnd \n");
 	if (!cwnd_test)
 		goto zero_wnd_test;
 
 	in_flight = tcp_packets_in_flight(tp);
+
 	/* Not even a single spot in the cwnd */
 	if (in_flight >= tp->snd_cwnd)
 		return false;
@@ -74,10 +81,13 @@ static bool mptcp_rr_is_available(const struct sock *sk, const struct sk_buff *s
 	 * already fills the cwnd.
 	 */
 	space = (tp->snd_cwnd - in_flight) * tp->mss_cache;
+	//printk(" 	inflight = %u 	cwnd=%u	  space=%u \n", in_flight, tp->snd_cwnd, space);
 
 	if (tp->write_seq - tp->snd_nxt > space)
+	{
+		//printk(" 	not fit space: data to send (bytes) = %u \n", tp->write_seq - tp->snd_nxt);
 		return false;
-
+	}
 zero_wnd_test:
 	if (zero_wnd_test && !before(tp->write_seq, tcp_wnd_end(tp)))
 		return false;
@@ -118,6 +128,11 @@ static struct sock *rr_get_available_subflow(struct sock *meta_sk,
 	mptcp_for_each_sk(mpcb, sk) {
 		struct tcp_sock *tp = tcp_sk(sk);
 
+		mptcp_debug("%s subflow %u  for pkt len=%u \n",
+			__func__,
+			ntohs(((struct inet_sock *)tp)->inet_dport),
+			ntohs(skb->len));
+
 		if (!mptcp_rr_is_available(sk, skb, zero_wnd_test, true))
 			continue;
 
@@ -125,7 +140,11 @@ static struct sock *rr_get_available_subflow(struct sock *meta_sk,
 			backupsk = sk;
 			continue;
 		}
-
+		mptcp_debug("%s subflow %d available for pkt seq: %u\n",
+			__func__,
+			ntohs(((struct inet_sock *)tp)->inet_dport),
+			ntohl((tcp_hdr(skb))->seq));
+			
 		bestsk = sk;
 	}
 
@@ -178,7 +197,7 @@ static struct sk_buff *mptcp_rr_next_segment(struct sock *meta_sk,
 {
 	const struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct sock *sk_it, *choose_sk = NULL;
-	struct sk_buff *skb = __mptcp_rr_next_segment(meta_sk, reinject);
+	struct sk_buff *skb = __mptcp_rr_next_segment(meta_sk, reinject); //get the next segment
 	unsigned char split = num_segments;
 	unsigned char iter = 0, full_subs = 0;
 
@@ -201,15 +220,25 @@ retry:
 	/* First, we look for a subflow who is currently being used */
 	mptcp_for_each_sk(mpcb, sk_it) {
 		struct tcp_sock *tp_it = tcp_sk(sk_it);
-		struct rrsched_priv *rsp = rrsched_get_priv(tp_it);
+		struct rrsched_priv *rsp = rrsched_get_priv(tp_it);// wtf here
+		
+		mptcp_debug("%s:  sk %u		skb_len %u quota=%u \n", 
+				__func__,
+				ntohs(((struct inet_sock *)tp_it)->inet_dport),
+				skb->len, rsp->quota);
 
 		if (!mptcp_rr_is_available(sk_it, skb, false, cwnd_limited))
+		{	printk("  sk %u is not available, cwnd = %u \n",
+				ntohs(((struct inet_sock *)tp_it)->inet_dport),
+				tp_it->snd_cwnd );
 			continue;
-
+		}
 		iter++;
 
 		/* Is this subflow currently being used? */
+		// 
 		if (rsp->quota > 0 && rsp->quota < num_segments) {
+			printk("    found. quota=%u \n", rsp->quota);
 			split = num_segments - rsp->quota;
 			choose_sk = sk_it;
 			goto found;
@@ -217,19 +246,23 @@ retry:
 
 		/* Or, it's totally unused */
 		if (!rsp->quota) {
+			printk("    unused. quota=%u \n", rsp->quota);
 			split = num_segments;
 			choose_sk = sk_it;
 		}
 
 		/* Or, it must then be fully used  */
 		if (rsp->quota == num_segments)
-			full_subs++;
+		{	full_subs++;
+			printk("    this sf fully used. quota=%u 	num of full subs = %u\n", rsp->quota, full_subs);
+		}
 	}
 
 	/* All considered subflows have a full quota, and we considered at
 	 * least one.
 	 */
-	if (iter && iter == full_subs) {
+	printk("    iter = %u, full_subs = %u \n", iter, full_subs);
+	if (iter && (iter == full_subs)) {
 		/* So, we restart this round by setting quota to 0 and retry
 		 * to find a subflow.
 		 */
@@ -238,8 +271,12 @@ retry:
 			struct rrsched_priv *rsp = rrsched_get_priv(tp_it);
 
 			if (!mptcp_rr_is_available(sk_it, skb, false, cwnd_limited))
+			{	printk("  chosen sk %u is not available, cwnd = %u\n",
+					ntohs(((struct inet_sock *)tp_it)->inet_dport),
+					tp_it->snd_cwnd );
 				continue;
-
+			}
+			printk(" sf %u  reset quota to 0\n", ntohs(((struct inet_sock *)tp_it)->inet_dport));
 			rsp->quota = 0;
 		}
 
@@ -252,18 +289,24 @@ found:
 		struct tcp_sock *choose_tp = tcp_sk(choose_sk);
 		struct rrsched_priv *rsp = rrsched_get_priv(choose_tp);
 
+		printk("  chosen sf: %u \n",ntohs(((struct inet_sock *)choose_tp)->inet_dport));
 		if (!mptcp_rr_is_available(choose_sk, skb, false, true))
+		{	printk("  chosen sf is not available, cwnd = %u \n",
+				choose_tp->snd_cwnd );
 			return NULL;
-
+		}
 		*subsk = choose_sk;
 		mss_now = tcp_current_mss(*subsk);
 		*limit = split * mss_now;
+
+		printk("    quota before added=%u \n", rsp->quota);
 
 		if (skb->len > mss_now)
 			rsp->quota += DIV_ROUND_UP(skb->len, mss_now);
 		else
 			rsp->quota++;
 
+		printk("    quota after added=%u \n", rsp->quota);
 		return skb;
 	}
 

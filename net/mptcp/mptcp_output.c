@@ -473,6 +473,12 @@ static bool mptcp_skb_entail(struct sock *sk, struct sk_buff *skb, int reinject)
 	tp->write_seq += subskb->len + ((tcb->tcp_flags & TCPHDR_FIN) ? 1 : 0);
 	tcb->end_seq = tp->write_seq;
 
+
+	mptcp_debug("%s on subflow %u, pk  seq=%u ack=%u \n",
+		__func__,
+		ntohs(((struct inet_sock *)tp)->inet_dport),
+		ntohl(tcp_hdr(skb)->seq),
+		ntohl(tcp_hdr(skb)->ack_seq));
 	/* If it's a non-payload DATA_FIN (also no subflow-fin), the
 	 * segment is not part of the subflow but on a meta-only-level.
 	 */
@@ -611,6 +617,9 @@ int mptcp_write_wakeup(struct sock *meta_sk)
 			return -1;
 		skb_mstamp_get(&skb->skb_mstamp);
 
+		
+             	mptcp_debug(" 	timestamp: %u\n", (skb->skb_mstamp).stamp_us);
+
 		mptcp_check_sndseq_wrap(meta_tp, TCP_SKB_CB(skb)->end_seq -
 						 TCP_SKB_CB(skb)->seq);
 		tcp_event_new_data_sent(meta_sk, skb);
@@ -654,6 +663,7 @@ bool mptcp_write_xmit(struct sock *meta_sk, unsigned int mss_now, int nonagle,
 	unsigned int sublimit;
 	__u32 path_mask = 0;
 
+			// call scheduler here
 	while ((skb = mpcb->sched_ops->next_segment(meta_sk, &reinject, &subsk,
 						    &sublimit))) {
 		unsigned int limit;
