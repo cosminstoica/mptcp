@@ -252,7 +252,7 @@ retry:
 		}
 
 		/* Or, it must then be fully used  */
-		if (rsp->quota == num_segments)
+		if (rsp->quota >= num_segments)
 		{	full_subs++;
 			printk("    this sf fully used. quota=%u 	num of full subs = %u\n", rsp->quota, full_subs);
 		}
