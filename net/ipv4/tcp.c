@@ -2453,16 +2453,29 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		/* Cannot be used if MPTCP is not used or we already have
 		 * established an MPTCP-connection.
 		 */
-		if (mptcp_init_failed || !sysctl_mptcp_enabled ||
-		    sk->sk_state != TCP_CLOSE)
-			return -EPERM;
+		if (mptcp_init_failed) {
+                    pr_err("mptcp_init_failed\n");
+                    return -100;
+                }
+                if (!sysctl_mptcp_enabled) {
+                    pr_err("mptcp_is_not_enabled\n");
+                    return -101;
+                }
+                if (sk->sk_state != TCP_CLOSE) {
+                    pr_err("mptcp is at state:%d\n", sk->sk_state);
+                    return -sk->sk_state;
+                }
 
+                pr_err("set mptcp scheduler should work.\n");
+                pr_err("optlen = %d\n", (int) optlen);
 		val = strncpy_from_user(name, optval,
 					min_t(long, MPTCP_SCHED_NAME_MAX - 1,
 					      optlen));
 
-		if (val < 0)
+		if (val < 0) {
+                        pr_err("set scheduler return: %d", val);
 			return -EFAULT;
+                }
 		name[val] = 0;
 
 		lock_sock(sk);
