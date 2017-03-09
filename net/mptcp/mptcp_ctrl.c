@@ -1044,6 +1044,7 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 	struct tcp_sock *master_tp, *meta_tp = tcp_sk(meta_sk);
 	u64 idsn;
 
+	mptcp_debug("enter mptcp_alloc_mpcb \n");
 	dst_release(meta_sk->sk_rx_dst);
 	meta_sk->sk_rx_dst = NULL;
 	/* This flag is set to announce sock_lock_init to
@@ -1057,7 +1058,9 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 
 	master_tp = tcp_sk(master_sk);
 
+	mptcp_debug("enter kmem_cache_zalloc: ");
 	mpcb = kmem_cache_zalloc(mptcp_cb_cache, GFP_ATOMIC);
+	mptcp_debug(" done \n start atomic_set:");
 	if (!mpcb) {
 		/* sk_free (and __sk_free) requirese wmem_alloc to be 1.
 		 * All the rest is set to 0 thanks to __GFP_ZERO above.
@@ -1066,6 +1069,7 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 		sk_free(master_sk);
 		return -ENOBUFS;
 	}
+	mptcp_debug(" done \n");
 
 #if IS_ENABLED(CONFIG_IPV6)
 	if (meta_icsk->icsk_af_ops == &mptcp_v6_mapped) {
@@ -1108,6 +1112,7 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 	mpcb->mptcp_loc_token = meta_tp->mptcp_loc_token;
 
 	/* Generate Initial data-sequence-numbers */
+	mptcp_debug(" Generate Initial DSS:");
 	mptcp_key_sha1(mpcb->mptcp_loc_key, NULL, &idsn);
 	idsn = ntohll(idsn) + 1;
 	mpcb->snd_high_order[0] = idsn >> 32;
@@ -1147,6 +1152,7 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 	meta_tp->was_meta_sk = 0;
 
 	/* Initialize the queues */
+	mptcp_debug(" done \n Initialize the queues:");
 	skb_queue_head_init(&mpcb->reinject_queue);
 	skb_queue_head_init(&master_tp->out_of_order_queue);
 	tcp_prequeue_init(master_tp);
@@ -1155,6 +1161,7 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 	master_tp->tsq_flags = 0;
 
 	mutex_init(&mpcb->mpcb_mutex);
+	mptcp_debug(" Initialize the accept_queue:");
 
 	/* Init the accept_queue structure, we support a queue of 32 pending
 	 * connections, it does not need to be huge, since we only store  here
@@ -1166,6 +1173,7 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 		sk_free(master_sk);
 		return -ENOMEM;
 	}
+	mptcp_debug(" done \n enable_static_key:");
 
 	if (!sock_flag(meta_sk, SOCK_MPTCP)) {
 		mptcp_enable_static_key();
@@ -1182,11 +1190,13 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 	/* Meta-level retransmit timer */
 	meta_icsk->icsk_rto *= 2; /* Double of initial - rto */
 
+	mptcp_debug(" done \n init_xmit_timers and clear_xmit_timer:");
 	tcp_init_xmit_timers(master_sk);
 	/* Has been set for sending out the SYN */
 	inet_csk_clear_xmit_timer(meta_sk, ICSK_TIME_RETRANS);
 
 	if (!meta_tp->inside_tk_table) {
+		mptcp_debug(" done \n Adding the meta_tp in the token hashtable, lock_read:");
 		/* Adding the meta_tp in the token hashtable - coming from server-side */
 		rcu_read_lock();
 		spin_lock(&mptcp_tk_hashlock);
@@ -1195,6 +1205,7 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 
 		spin_unlock(&mptcp_tk_hashlock);
 		rcu_read_unlock();
+		mptcp_debug(" done \n unlock_read:");
 	}
 	master_tp->inside_tk_table = 0;
 
@@ -1204,6 +1215,7 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 
 	INIT_HLIST_HEAD(&mpcb->callback_list);
 
+	mptcp_debug(" done \n mpcb_inherit_sockopts:");
 	mptcp_mpcb_inherit_sockopts(meta_sk, master_sk);
 
 	mpcb->orig_sk_rcvbuf = meta_sk->sk_rcvbuf;
@@ -1211,10 +1223,14 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 	mpcb->orig_window_clamp = meta_tp->window_clamp;
 
 	/* The meta is directly linked - set refcnt to 1 */
+	mptcp_debug(" done \n atomic_set:");
 	atomic_set(&mpcb->mpcb_refcnt, 1);
 
+	mptcp_debug("start mptcp_init_path_manager:");
 	mptcp_init_path_manager(mpcb);
+	mptcp_debug(" done \n start mptcp_init_scheduler:");
 	mptcp_init_scheduler(mpcb);
+	mptcp_debug(" done \n start tcp_assign_congestion_control \n");
 
 	if (!try_module_get(inet_csk(master_sk)->icsk_ca_ops->owner))
 		tcp_assign_congestion_control(master_sk);
@@ -1917,11 +1933,13 @@ static int __mptcp_check_req_master(struct sock *child,
 	struct mptcp_cb *mpcb;
 	struct mptcp_request_sock *mtreq;
 
+	mptcp_debug("check MP_CAPABLE:");
 	/* Never contained an MP_CAPABLE */
 	if (!inet_rsk(req)->mptcp_rqsk)
 		return 1;
 
 	if (!inet_rsk(req)->saw_mpc) {
+		mptcp_debug("done\n fallback");
 		/* Fallback to regular TCP, because we saw one SYN without
 		 * MP_CAPABLE. In tcp_check_req we continue the regular path.
 		 * But, the socket has been added to the reqsk_tk_htb, so we
@@ -1939,6 +1957,7 @@ static int __mptcp_check_req_master(struct sock *child,
 	child_tp->mptcp_loc_key = mtreq->mptcp_loc_key;
 	child_tp->mptcp_loc_token = mtreq->mptcp_loc_token;
 
+	mptcp_debug("done\n create_master_sk: ");
 	if (mptcp_create_master_sk(meta_sk, mtreq->mptcp_rem_key,
 				   mtreq->mptcp_ver, child_tp->snd_wnd))
 		return -ENOBUFS;
@@ -1974,6 +1993,7 @@ int mptcp_check_req_fastopen(struct sock *child, struct request_sock *req)
 	u32 new_mapping;
 	int ret;
 
+        mptcp_debug("check_req_fastopen: start __mptcp_check_req_master");
 	ret = __mptcp_check_req_master(child, req);
 	if (ret)
 		return ret;
