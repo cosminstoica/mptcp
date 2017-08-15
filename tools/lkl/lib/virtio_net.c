@@ -88,6 +88,13 @@ static int net_enqueue(struct virtio_dev *dev, int q, struct virtio_req *req)
 			return -1;
 	} else if (q == RX_QUEUE_IDX) {
 		int i, len;
+#if 0
+	if (net_dev->nd->is_ip_encap) {
+		/* XXX: may not work with offload case */
+		iov[1].iov_base += LKL_ETH_HLEN;
+		iov[1].iov_len -= LKL_ETH_HLEN;
+	}
+#endif
 
 		ret = net_dev->nd->ops->rx(net_dev->nd, iov, req->buf_count);
 		if (ret < 0)
@@ -107,6 +114,18 @@ static int net_enqueue(struct virtio_dev *dev, int q, struct virtio_req *req)
 			header->flags = 0;
 			header->gso_type = LKL_VIRTIO_NET_HDR_GSO_NONE;
 		}
+
+#if 1
+	if (net_dev->nd->is_ip_encap) {
+		iov[1].iov_base -= LKL_ETH_HLEN;
+		iov[1].iov_len += LKL_ETH_HLEN;
+		ret += LKL_ETH_HLEN;
+
+		memcpy(iov[1].iov_base, net_dev->nd->mac, LKL_ETH_ALEN);
+		memset(iov[1].iov_base + 12, 0x08, 1);
+		memset(iov[1].iov_base + 13, 0x00, 1);
+	}
+#endif
 		/*
 		 * Have to compute how many descriptors we've consumed (really
 		 * only matters to the the mergeable RX mode) and return it

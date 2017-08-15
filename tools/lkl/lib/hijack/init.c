@@ -286,7 +286,9 @@ static int lkl_hijack_netdev_create(struct lkl_config *cfg, int ifidx)
 		if (strcmp(cfg->iftype[ifidx], "vde") == 0)
 			nd[ifidx] = lkl_netdev_vde_create(cfg->ifparams[ifidx]);
 		if (strcmp(cfg->iftype[ifidx], "raw") == 0)
-			nd[ifidx] = lkl_netdev_raw_create(cfg->ifparams[ifidx]);
+			nd[ifidx] = lkl_netdev_raw_create(cfg->ifparams[ifidx], 1);
+		if (strcmp(cfg->iftype[ifidx], "raw-ipenc") == 0)
+			nd[ifidx] = lkl_netdev_raw_create(cfg->ifparams[ifidx], 0);
 	}
 
 	if (nd[ifidx]) {
@@ -332,6 +334,12 @@ static int lkl_hijack_netdev_configure(struct lkl_config *cfg, int ifidx)
 				"failed to get ifindex for netdev id %d: %s\n",
 				nd_id[ifidx], lkl_strerror(nd_ifindex));
 	}
+
+	/* */
+	int lkl_netdev_ipencap_conf(int ifindex, struct lkl_netdev *nd);
+	if (nd[ifidx]->is_ip_encap)
+		lkl_netdev_ipencap_conf(nd_ifindex, nd[ifidx]);
+
 
 	if (nd_ifindex >= 0 && cfg->ifmtu_str[ifidx]) {
 		int mtu = atoi(cfg->ifmtu_str[ifidx]);
