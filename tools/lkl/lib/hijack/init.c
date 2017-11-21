@@ -251,6 +251,10 @@ static int lkl_hijack_netdev_create(struct lkl_config *cfg, int ifidx)
 		nd[ifidx] = lkl_netdev_tap_create(cfg->iftap[ifidx], offload);
 	}
 
+	fprintf(stderr, "iftype:%s ifparams:%s ifip:%s ifgateway:%s ifnetmask_len:%s gateway:%s\n",
+		cfg->iftype[ifidx], cfg->ifparams[ifidx], cfg->ifip[ifidx],
+		cfg->ifgateway[ifidx], cfg->ifnetmask_len[ifidx], cfg->gateway);
+
 	if (!nd[ifidx] && cfg->iftype[ifidx] && cfg->ifparams[ifidx]) {
 		if ((strcmp(cfg->iftype[ifidx], "tap") == 0)) {
 			nd[ifidx] =

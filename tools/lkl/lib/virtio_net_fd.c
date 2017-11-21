@@ -194,6 +194,7 @@ struct lkl_netdev *lkl_register_netdev_fd(int fd_rx, int fd_tx)
 	nd->fd_rx = fd_rx;
 	nd->fd_tx = fd_tx;
 	if (pipe(nd->pipe) < 0) {
+		fprintf(stderr, "failed to pipe() in lkl_register_netdev_fd\n");
 		perror("pipe");
 		free(nd);
 		return NULL;
