@@ -30,7 +30,7 @@ struct lkl_netdev *lkl_netdev_raw_create(const char *ifname, int raw)
 {
 	int ret;
 	struct sockaddr_ll ll;
-	int fd, fd_flags, val;
+	int fd, fd_flags;
 	struct lkl_netdev *nd;
 
 	if (raw)
@@ -55,12 +55,6 @@ struct lkl_netdev *lkl_netdev_raw_create(const char *ifname, int raw)
 		close(fd);
 		return NULL;
 	}
-
-	val = 1;
-	ret = setsockopt(fd, SOL_PACKET, PACKET_QDISC_BYPASS, &val,
-			 sizeof(val));
-	if (ret)
-		perror("PACKET_QDISC_BYPASS, ignoring");
 
 	fd_flags = fcntl(fd, F_GETFD, NULL);
 	fcntl(fd, F_SETFL, fd_flags | O_NONBLOCK);
